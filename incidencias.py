@@ -1,202 +1,185 @@
-# python
-from dataclasses import dataclass
-from datetime import datetime
-from collections import Counter, defaultdict
-import xml.etree.ElementTree as ET
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Script sencillo para procesar /home/.../Incidencies.xml y mostrar información
+significativa por consola con colores.
+"""
+# ...existing code...
 import argparse
+import xml.etree.ElementTree as ET
+from collections import Counter
+from datetime import datetime
+from operator import itemgetter
+import textwrap
 import sys
 
-# ANSI colors (simple)
-RESET = "\033[0m"
-BOLD = "\033[1m"
-GREEN = "\033[32m"
-YELLOW = "\033[33m"
-RED = "\033[31m"
-CYAN = "\033[36m"
+try:
+    from colorama import init as colorama_init, Fore, Style
+except Exception:
+    # If colorama is not installed, provide minimal fallback
+    class _Fake:
+        RESET_ALL = ''
+        RED = ''
+        YELLOW = ''
+        GREEN = ''
+        CYAN = ''
+        MAGENTA = ''
+        BLUE = ''
+        WHITE = ''
+        BRIGHT = ''
+    Fore = _Fake()
+    Style = _Fake()
+    def colorama_init(): pass
 
-DATE_FORMATS = [
-    "%Y-%m-%d",
-    "%d/%m/%Y",
-    "%Y/%m/%d",
-    "%d-%m-%Y",
-    "%Y-%m-%dT%H:%M:%S",
-]
+colorama_init(autoreset=True)
 
+# Tags used in the XML (exact names from el fichero)
+TAG_TIMESTAMP = "Marca_de_temps"
+TAG_PRIORITY = "Prioritat_de_la_incidència"
+TAG_TYPE = "Tipus_de_equip__PC__impressora__projector__televisor__switch_"
+TAG_LOCATION = "Ubicació"
+TAG_INFORMANT = "Nom_i_cognoms_d_informant"
+TAG_EMAIL = "Adreça_electrònica"
+TAG_DESC = "Descripció_de_la_incidència"
+TAG_FUNCIONA = "_El_equipament_funciona_actualment_"
+TAG_DATE = "Data_de_incidència"
+TAG_TIME = "Hora_de_incidència"
 
-@dataclass
-class Incident:
-    id: str
-    date: datetime | None
-    type: str
-    severity: str
-    location: str
-    description: str
-    raw: dict
+def get_text(elem, tag):
+    t = elem.find(tag)
+    if t is None or t.text is None:
+        return ""
+    return t.text.strip()
 
-
-def try_parse_date(s: str) -> datetime | None:
-    if not s:
-        return None
-    s = s.strip()
-    for fmt in DATE_FORMATS:
-        try:
-            return datetime.strptime(s, fmt)
-        except Exception:
+def try_parse_timestamp(ts_text, date_text, time_text):
+    # Try multiple formats, return datetime or None
+    candidates = []
+    if ts_text:
+        candidates.append(ts_text)
+    if date_text:
+        # combine date and time if available
+        combined = date_text + (' ' + time_text if time_text else '')
+        candidates.append(combined)
+    for s in candidates:
+        s = s.strip()
+        if not s:
             continue
-    # try parse year-only or fallback numeric year
-    try:
-        if len(s) == 4 and s.isdigit():
-            return datetime(int(s), 1, 1)
-    except Exception:
-        pass
+        for fmt in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y", "%d/%m/%Y %H:%M:%S"):
+            try:
+                return datetime.strptime(s, fmt)
+            except Exception:
+                continue
     return None
 
+def color_for_priority(p):
+    p_low = p.lower()
+    if "alta" in p_low or "high" in p_low:
+        return Fore.RED + Style.BRIGHT
+    if "media" in p_low or "med" in p_low:
+        return Fore.YELLOW + Style.BRIGHT
+    if "baixa" in p_low or "low" in p_low:
+        return Fore.GREEN + Style.BRIGHT
+    return Fore.CYAN
 
-def normalize_text(s: str) -> str:
-    if s is None:
-        return ""
-    return " ".join(s.strip().split())
+def shorten(s, width=140):
+    return textwrap.shorten(s or "", width=width, placeholder="…")
 
-
-def parse_xml(path: str) -> list[Incident]:
+def process(file_path):
     try:
-        tree = ET.parse(path)
+        tree = ET.parse(file_path)
     except Exception as e:
-        print(f"{RED}Error parsing XML:{RESET} {e}", file=sys.stderr)
-        return []
-
+        print(Fore.RED + "Error leyendo XML:" + str(e))
+        sys.exit(1)
     root = tree.getroot()
-    records = []
+    incidencias = []
+    for inc in root.findall("Incidencia"):
+        record = {
+            "timestamp_raw": get_text(inc, TAG_TIMESTAMP),
+            "date": get_text(inc, TAG_DATE),
+            "time": get_text(inc, TAG_TIME),
+            "email": get_text(inc, TAG_EMAIL),
+            "informant": get_text(inc, TAG_INFORMANT),
+            "ubicacio": get_text(inc, TAG_LOCATION),
+            "tipus_equip": get_text(inc, TAG_TYPE),
+            "model": get_text(inc, "Model_de_equip"),
+            "codi": get_text(inc, "Codi_d_ordinador__SACE_"),
+            "desc": get_text(inc, TAG_DESC),
+            "prioritat": get_text(inc, TAG_PRIORITY),
+            "funciona": get_text(inc, TAG_FUNCIONA),
+        }
+        record["ts_parsed"] = try_parse_timestamp(record["timestamp_raw"], record["date"], record["time"])
+        incidencias.append(record)
 
-    # Guess record nodes: children of root; skip attributes-only root
-    for elem in root:
-        # build map of child tag -> text (flatten)
-        data = {}
-        for child in elem:
-            tag = child.tag.lower()
-            # strip namespace if present
-            if '}' in tag:
-                tag = tag.split('}', 1)[1]
-            data[tag] = normalize_text(child.text)
-        # fallback: if elem has text itself and no children, treat as value
-        if not data and (elem.text and elem.text.strip()):
-            data[elem.tag.lower()] = normalize_text(elem.text)
+    total = len(incidencias)
+    by_priority = Counter((r["prioritat"] or "Desconegut").strip() for r in incidencias)
+    by_type = Counter((r["tipus_equip"] or "Desconegut").strip() for r in incidencias)
+    by_location = Counter((r["ubicacio"] or "Desconegut").strip() for r in incidencias)
+    funciona_counter = Counter((r["funciona"] or "Desconegut").strip() for r in incidencias)
 
-        # heuristics for common field names
-        id_ = data.get("id") or data.get("identificador") or data.get("incidenciaid") or data.get("codigo") or ""
-        date_s = data.get("date") or data.get("data") or data.get("fecha") or data.get("dia") or ""
-        date = try_parse_date(date_s)
-        type_ = data.get("type") or data.get("tipus") or data.get("categoria") or data.get("categoria_incidencia") or data.get("clasificacion") or ""
-        severity = data.get("severity") or data.get("gravedad") or data.get("nivel") or data.get("prioritat") or ""
-        location = data.get("location") or data.get("municipi") or data.get("place") or data.get("localitat") or ""
-        description = data.get("description") or data.get("descripcio") or data.get("detall") or ""
+    # Sort by parsed timestamp (fallback to unspecified)
+    sorted_incs = sorted(incidencias, key=lambda r: r["ts_parsed"] or datetime.min, reverse=True)
 
-        inc = Incident(
-            id=id_,
-            date=date,
-            type=type_,
-            severity=severity,
-            location=location,
-            description=description,
-            raw=data,
-        )
-        records.append(inc)
-    return records
+    # Output summary
+    print(Style.BRIGHT + Fore.MAGENTA + "\nResumen de Incidencias".center(80, " "))
+    print(Style.RESET_ALL)
+    print(f"Archivo: {file_path}")
+    print(f"Total incidencias: {Fore.CYAN}{total}{Style.RESET_ALL}")
+    print()
 
+    # Priorities
+    print(Style.BRIGHT + "Incidencias por prioridad:" + Style.RESET_ALL)
+    for p, c in by_priority.most_common():
+        color = color_for_priority(p)
+        print(f"  {color}{p:12}{Style.RESET_ALL}  {c}")
+    print()
 
-def filter_incidents(records: list[Incident]) -> tuple[list[Incident], int]:
-    filtered = []
-    removed = 0
-    now_year = datetime.now().year
-    for r in records:
-        # remove if no id and no date and no type
-        if (not r.id) and (r.date is None) and (not r.type):
-            removed += 1
-            continue
-        # remove if date year obviously wrong (far future or too old)
-        if r.date:
-            y = r.date.year
-            if y > now_year + 2 or y < 1900:
-                removed += 1
-                continue
-        filtered.append(r)
-    return filtered, removed
+    # Equipo
+    print(Style.BRIGHT + "Incidencias por tipo de equipo (top 10):" + Style.RESET_ALL)
+    for tipo, c in by_type.most_common(10):
+        print(f"  {Fore.BLUE}{tipo[:30]:30}{Style.RESET_ALL}  {c}")
+    print()
 
+    # Ubicaciones top
+    print(Style.BRIGHT + "Ubicaciones más frecuentes (top 10):" + Style.RESET_ALL)
+    for loc, c in by_location.most_common(10):
+        print(f"  {Fore.WHITE}{loc[:40]:40}{Style.RESET_ALL}  {c}")
+    print()
 
-def compute_stats(records: list[Incident]) -> dict:
-    stats = {}
-    stats["total"] = len(records)
-    by_year = Counter()
-    by_type = Counter()
-    by_severity = Counter()
-    by_location = Counter()
+    # Funcionamiento
+    print(Style.BRIGHT + "Estado de funcionamiento:" + Style.RESET_ALL)
+    for k, v in funciona_counter.items():
+        k_display = k or "Desconegut"
+        col = Fore.GREEN if "Si" in k or "si" in k else (Fore.RED if "No" in k or "no" in k else Fore.CYAN)
+        print(f"  {col}{k_display:12}{Style.RESET_ALL}  {v}")
+    print()
 
-    for r in records:
-        if r.date:
-            by_year[r.date.year] += 1
-        else:
-            by_year["unknown"] += 1
-        by_type[r.type or "unknown"] += 1
-        by_severity[r.severity or "unknown"] += 1
-        by_location[r.location or "unknown"] += 1
+    # Show recent incidents (top 10)
+    print(Style.BRIGHT + "Últimas incidencias (detallado, top 10):" + Style.RESET_ALL)
+    for r in sorted_incs[:10]:
+        pri = r["prioritat"] or "Desconegut"
+        color = color_for_priority(pri)
+        ts = r["ts_parsed"].strftime("%Y-%m-%d %H:%M:%S") if r["ts_parsed"] else (r["date"] + " " + r["time"] if r["date"] else r["timestamp_raw"] or "N/A")
+        print(color + f"\n[{pri.upper():6}] {ts}" + Style.RESET_ALL)
+        print(f"  Informant: {Fore.CYAN}{shorten(r['informant'], 80)}{Style.RESET_ALL}  Email: {r['email'] or 'N/A'}")
+        print(f"  Ubicació: {Fore.WHITE}{shorten(r['ubicacio'], 60)}{Style.RESET_ALL}  Tipus: {shorten(r['tipus_equip'],30)}")
+        print(f"  Model / Codi: {shorten(r['model'],30)} / {shorten(r['codi'],30)}")
+        print("  Descripció:")
+        print("   " + textwrap.fill(shorten(r['desc'], 400), width=76, initial_indent="   ", subsequent_indent="   "))
+    print()
 
-    stats["by_year"] = by_year
-    stats["by_type"] = by_type
-    stats["by_severity"] = by_severity
-    stats["by_location"] = by_location
-    return stats
-
-
-def pretty_print(records: list[Incident], stats: dict, removed_count: int, no_color: bool = False, show_examples: int = 5):
-    C = {"B": BOLD, "G": GREEN, "Y": YELLOW, "R": RED, "C": CYAN, "Z": RESET}
-    if no_color:
-        for k in C:
-            C[k] = ""
-    print(f"{C['B']}{C['C']}Incidents summary{C['Z']}")
-    print(f" Total parsed: {len(records) + removed_count}")
-    print(f" Valid: {C['G']}{stats['total']}{C['Z']}  Removed (filtered): {C['Y']}{removed_count}{C['Z']}\n")
-
-    def print_counter(title, counter: Counter, top=10):
-        print(f"{C['B']}{title}{C['Z']}")
-        for i, (k, v) in enumerate(counter.most_common(top), 1):
-            print(f" {i:2d}. {k:20.20s}  {C['G']}{v}{C['Z']}")
-        print()
-
-    print_counter("Incidents by year", stats["by_year"])
-    print_counter("Incidents by type", stats["by_type"])
-    print_counter("Incidents by severity", stats["by_severity"])
-    print_counter("Top locations", stats["by_location"])
-
-    if show_examples:
-        print(f"{C['B']}Example records (first {show_examples}):{C['Z']}")
-        for r in records[:show_examples]:
-            d = r.date.strftime("%Y-%m-%d") if r.date else "unknown"
-            print(f" - {C['Y']}{d}{C['Z']} | {C['C']}{r.type or 'no-type'}{C['Z']} | {r.location or 'no-location'} | {r.id or '-'}")
-            if r.description:
-                desc = r.description
-                if len(desc) > 140:
-                    desc = desc[:137] + "..."
-                print(f"    {desc}")
-        print()
-
+    # Extras: mostrar un pequeño checklist de acciones sugeridas
+    high_count = sum(c for p, c in by_priority.items() if "alta" in p.lower() or "high" in p.lower())
+    print(Style.BRIGHT + "Sugerencias rápidas:" + Style.RESET_ALL)
+    print(f"  - Incidencias alta: {Fore.RED}{high_count}{Style.RESET_ALL} -> priorizar revisión hardware/seguridad.")
+    print(f"  - Top ubicaciones a revisar: {', '.join([loc for loc, _ in by_location.most_common(3)])}")
+    print()
 
 def main():
-    p = argparse.ArgumentParser(description="Process incidents XML and show statistics")
-    p.add_argument("xml", nargs="?", default="incidencies.xml", help="XML file path")
-    p.add_argument("--no-color", action="store_true", help="Disable ANSI colors")
-    p.add_argument("--examples", type=int, default=5, help="Show example records")
-    args = p.parse_args()
-
-    records = parse_xml(args.xml)
-    if not records:
-        print(f"{RED}No records found in file {args.xml}{RESET}", file=sys.stderr)
-        return
-
-    filtered, removed = filter_incidents(records)
-    stats = compute_stats(filtered)
-    pretty_print(filtered, stats, removed, no_color=args.no_color, show_examples=args.examples)
-
+    parser = argparse.ArgumentParser(description="Procesa un XML de incidencias y muestra estadísticas coloreadas.")
+    parser.add_argument("--file", "-f", default="/home/cristian.ojeda.7e7/PycharmProjects/incidencias/Incidencies.xml",
+                        help="Ruta al fichero XML de incidencias")
+    args = parser.parse_args()
+    process(args.file)
 
 if __name__ == "__main__":
     main()
- #hola
