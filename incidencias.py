@@ -4,7 +4,6 @@
 Script sencillo para procesar /home/.../Incidencies.xml y mostrar información
 significativa por consola con colores.
 """
-# ...existing code...
 import argparse
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -12,6 +11,8 @@ from datetime import datetime
 from operator import itemgetter
 import textwrap
 import sys
+import json
+from pathlib import Path
 
 try:
     from colorama import init as colorama_init, Fore, Style
@@ -84,7 +85,7 @@ def color_for_priority(p):
 def shorten(s, width=140):
     return textwrap.shorten(s or "", width=width, placeholder="…")
 
-def process(file_path):
+def process(file_path, json_path=None):
     try:
         tree = ET.parse(file_path)
     except Exception as e:
@@ -174,12 +175,66 @@ def process(file_path):
     print(f"  - Top ubicaciones a revisar: {', '.join([loc for loc, _ in by_location.most_common(3)])}")
     print()
 
+    # Prepare JSON payload if requested
+    if json_path:
+        def serialize_record(r):
+            return {
+                "timestamp_raw": r.get("timestamp_raw"),
+                "ts_iso": (r["ts_parsed"].isoformat() if r["ts_parsed"] else None),
+                "date": r.get("date"),
+                "time": r.get("time"),
+                "informant": r.get("informant"),
+                "email": r.get("email"),
+                "ubicacio": r.get("ubicacio"),
+                "tipus_equip": r.get("tipus_equip"),
+                "model": r.get("model"),
+                "codi": r.get("codi"),
+                "desc": r.get("desc"),
+                "prioritat": r.get("prioritat"),
+                "funciona": r.get("funciona"),
+            }
+
+        payload = {
+            "meta": {
+                "source_file": str(Path(file_path).resolve()),
+                "total": total,
+                "generated_at": datetime.utcnow().isoformat() + "Z",
+                "by_priority": dict(by_priority),
+                "by_type": dict(by_type),
+                "by_location": dict(by_location),
+                "funciona": dict(funciona_counter),
+            },
+            "recent": [serialize_record(r) for r in sorted_incs[:10]],
+            "incidencias": [serialize_record(r) for r in incidencias],
+        }
+
+        try:
+            p = Path(json_path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with p.open("w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False, indent=2)
+            print(Fore.GREEN + f"JSON exportado a: {p}" + Style.RESET_ALL)
+        except Exception as e:
+            print(Fore.RED + "Error escribiendo JSON: " + str(e) + Style.RESET_ALL)
+
 def main():
     parser = argparse.ArgumentParser(description="Procesa un XML de incidencias y muestra estadísticas coloreadas.")
     parser.add_argument("--file", "-f", default="/home/cristian.ojeda.7e7/PycharmProjects/incidencias/Incidencies.xml",
                         help="Ruta al fichero XML de incidencias")
+    parser.add_argument("--json", "-j", dest="json_out", default=None,
+                        help="(opcional) Ruta de salida para exportar JSON con los datos procesados (por defecto se crea junto al XML)")
     args = parser.parse_args()
-    process(args.file)
+
+    # Si no se indica --json, crear JSON junto al fichero XML (misma base, extensión .json)
+    json_out = args.json_out
+    if not json_out:
+        try:
+            xml_path = Path(args.file)
+            json_out = str(xml_path.with_suffix('.json'))
+        except Exception:
+            json_out = None
+
+    process(args.file, json_path=json_out)
 
 if __name__ == "__main__":
     main()
