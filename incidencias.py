@@ -182,7 +182,7 @@ def pretty_print(records: list[Incident], stats: dict, removed_count: int, no_co
 
 def main():
     p = argparse.ArgumentParser(description="Process incidents XML and show statistics")
-    p.add_argument("xml", nargs="?", default="incidencias.xml", help="XML file path")
+    p.add_argument("xml", nargs="?", default="incidencies.xml", help="XML file path")
     p.add_argument("--no-color", action="store_true", help="Disable ANSI colors")
     p.add_argument("--examples", type=int, default=5, help="Show example records")
     args = p.parse_args()
