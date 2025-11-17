@@ -13,6 +13,7 @@ import textwrap
 import sys
 import json
 from pathlib import Path
+import subprocess  # <-- added
 
 try:
     from colorama import init as colorama_init, Fore, Style
@@ -176,6 +177,7 @@ def process(file_path, json_path=None):
     print()
 
     # Prepare JSON payload if requested
+    json_written = None
     if json_path:
         def serialize_record(r):
             return {
@@ -214,8 +216,60 @@ def process(file_path, json_path=None):
             with p.open("w", encoding="utf-8") as fh:
                 json.dump(payload, fh, ensure_ascii=False, indent=2)
             print(Fore.GREEN + f"JSON exportado a: {p}" + Style.RESET_ALL)
+            json_written = str(p.resolve())
         except Exception as e:
             print(Fore.RED + "Error escribiendo JSON: " + str(e) + Style.RESET_ALL)
+
+    return json_written
+
+# new helper to add/commit/push the generated JSON
+def git_push(json_path, remote="origin", branch="main", commit_msg=None):
+    if commit_msg is None:
+        commit_msg = f"Add/update incidencias JSON: {Path(json_path).name}"
+    json_p = Path(json_path).resolve()
+    if not json_p.exists():
+        print(Fore.RED + f"File not found for git push: {json_p}" + Style.RESET_ALL)
+        return False
+    repo_cwd = json_p.parent
+    # try to find git top-level directory
+    try:
+        proc = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=repo_cwd, capture_output=True, text=True, check=True)
+        repo_root = Path(proc.stdout.strip())
+    except Exception as e:
+        print(Fore.RED + "Git repo not found (run inside a git repo) or git not installed: " + str(e) + Style.RESET_ALL)
+        return False
+
+    # make path relative to repo root if possible
+    try:
+        rel_path = str(json_p.relative_to(repo_root))
+    except Exception:
+        rel_path = str(json_p)  # fallback to absolute
+
+    try:
+        subprocess.run(["git", "add", rel_path], cwd=repo_root, check=True)
+    except subprocess.CalledProcessError as e:
+        print(Fore.RED + "git add failed: " + str(e) + Style.RESET_ALL)
+        return False
+
+    # commit (may return non-zero if nothing to commit)
+    commit_proc = subprocess.run(["git", "commit", "-m", commit_msg], cwd=repo_root, capture_output=True, text=True)
+    if commit_proc.returncode != 0:
+        # no commit created (possibly no changes)
+        stdout = commit_proc.stdout + commit_proc.stderr
+        if "nothing to commit" in stdout.lower() or "no changes added to commit" in stdout.lower():
+            print(Fore.YELLOW + "No changes to commit." + Style.RESET_ALL)
+        else:
+            print(Fore.RED + "git commit failed: " + stdout + Style.RESET_ALL)
+            return False
+
+    # push
+    try:
+        subprocess.run(["git", "push", remote, branch], cwd=repo_root, check=True)
+        print(Fore.GREEN + f"Pushed {rel_path} to {remote}/{branch}" + Style.RESET_ALL)
+        return True
+    except subprocess.CalledProcessError as e:
+        print(Fore.RED + "git push failed: " + str(e) + Style.RESET_ALL)
+        return False
 
 def main():
     parser = argparse.ArgumentParser(description="Procesa un XML de incidencias y muestra estadísticas coloreadas.")
@@ -223,6 +277,12 @@ def main():
                         help="Ruta al fichero XML de incidencias")
     parser.add_argument("--json", "-j", dest="json_out", default=None,
                         help="(opcional) Ruta de salida para exportar JSON con los datos procesados (por defecto se crea junto al XML)")
+    # new git options
+    parser.add_argument("--push", action="store_true", help="Si se usa, hace git add/commit/push del JSON generado (debe estar dentro de un repo git).")
+    parser.add_argument("--git-remote", dest="git_remote", default="origin", help="Remote git (default: origin)")
+    parser.add_argument("--git-branch", dest="git_branch", default="main", help="Branch a pushear (default: main)")
+    parser.add_argument("--commit-msg", dest="commit_msg", default=None, help="Mensaje de commit para el JSON")
+
     args = parser.parse_args()
 
     # Si no se indica --json, crear JSON junto al fichero XML (misma base, extensión .json)
@@ -234,7 +294,12 @@ def main():
         except Exception:
             json_out = None
 
-    process(args.file, json_path=json_out)
+    json_written = process(args.file, json_path=json_out)
+
+    if args.push:
+        if not json_written:
+            print(Fore.RED + "No JSON file was written; skipping git push." + Style.RESET_ALL)
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()
