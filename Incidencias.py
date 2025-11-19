@@ -283,7 +283,7 @@ def process(file_path, json_path=None):
             print(f"  {Fore.RED}  Razones: {', '.join(r.get('invalid_reasons', []))}{Style.RESET_ALL}")
     print()
 
-    # Extras: mostrar un pequeño checklist de acciones sugeridas
+    # Extras: mostrar un pequeño checklist de acciones sugeridas.
     high_count = sum(c for p, c in by_priority.items() if "alta" in p.lower() or "high" in p.lower())
     print(Style.BRIGHT + "Sugerencias rápidas:" + Style.RESET_ALL)
     print(f"  - Incidencias alta: {Fore.RED}{high_count}{Style.RESET_ALL} -> priorizar revisión hardware/seguridad.")
