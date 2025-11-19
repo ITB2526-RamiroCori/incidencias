@@ -14,6 +14,7 @@ import sys
 import json
 from pathlib import Path
 import re
+import traceback
 
 try:
     from colorama import init as colorama_init, Fore, Style
@@ -180,11 +181,46 @@ def color_for_priority(p):
 def shorten(s, width=140):
     return textwrap.shorten(s or "", width=width, placeholder="…")
 
+def sanitize_exception_msg(msg: str) -> str:
+    """
+    Remove likely absolute paths and excessive details from exception messages.
+    Keeps the core message but replaces path-like fragments with '<ruta>'.
+    """
+    if not msg:
+        return ""
+    # replace things that look like /something/... or C:\... with <ruta>
+    msg = re.sub(r'([A-Za-z]:\\[^\s]+)', '<ruta>', msg)      # Windows paths
+    msg = re.sub(r'(/[^ \n\t\r]+)+', '<ruta>', msg)         # Unix-like paths
+    # keep length bounded
+    if len(msg) > 250:
+        msg = msg[:247] + "…"
+    return msg
+
+def report_error(exc: Exception, context: str = None):
+    """
+    Print a short, non-revealing error message and a small context hint.
+    Does NOT print full trace or absolute paths.
+    """
+    name = exc.__class__.__name__
+    msg = ""
+    try:
+        msg = str(exc)
+    except Exception:
+        msg = name
+    safe_msg = sanitize_exception_msg(msg)
+    print(Fore.RED + "No funciona: " + Style.BRIGHT + f"{name}" + Style.RESET_ALL)
+    if safe_msg:
+        print(Fore.RED + "  Mensaje: " + safe_msg + Style.RESET_ALL)
+    if context:
+        print(Fore.YELLOW + "  Contexto: " + context + Style.RESET_ALL)
+    # optionally suggest checking the XML/permissions etc.
+    print(Fore.CYAN + "  Comprueba el fichero, permisos o formato XML." + Style.RESET_ALL)
+
 def process(file_path, json_path=None):
     try:
         tree = ET.parse(file_path)
     except Exception as e:
-        print(Fore.RED + "Error leyendo XML:" + str(e))
+        report_error(e, context="leyendo/parsing del XML")
         sys.exit(1)
     root = tree.getroot()
     incidencias = []
@@ -340,7 +376,7 @@ def process(file_path, json_path=None):
                 json.dump(out, fh, ensure_ascii=False, indent=2)
             print(Fore.GREEN + f"JSON escrito en: {str(p)}" + Style.RESET_ALL)
         except Exception as e:
-            print(Fore.RED + f"Error escribiendo JSON: {e}" + Style.RESET_ALL)
+            report_error(e, context="escribiendo JSON de salida")
 
 def load_incidencias(file_path):
     """
@@ -350,7 +386,7 @@ def load_incidencias(file_path):
     try:
         tree = ET.parse(file_path)
     except Exception as e:
-        print(Fore.RED + "Error leyendo XML:" + str(e))
+        report_error(e, context="cargando incidencias desde XML")
         return []
     root = tree.getroot()
     incidencias = []
@@ -436,7 +472,8 @@ def main():
 
     # Inform which XML file will be used
     try:
-        print(Fore.CYAN + f"Usando archivo XML: {str(xml_path)}" + Style.RESET_ALL)
+        # Print only filename (no full path) to avoid leaking directory structure
+        print(Fore.CYAN + f"Usando archivo XML: {Path(xml_path).name}" + Style.RESET_ALL)
     except Exception:
         pass
 
@@ -486,6 +523,13 @@ def main():
                 print(Fore.YELLOW + "Opción no válida. Intenta de nuevo." + Style.RESET_ALL)
     except KeyboardInterrupt:
         print("\n" + Fore.GREEN + "Interrupción por teclado. Saliendo..." + Style.RESET_ALL)
+    except Exception as e:
+        report_error(e, context="ejecución principal")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        report_error(e, context="ejecución principal")
+        sys.exit(1)
