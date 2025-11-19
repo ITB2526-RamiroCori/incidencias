@@ -345,7 +345,7 @@ def process(file_path, json_path=None):
 def load_incidencias(file_path):
     """
     Parsea el XML y devuelve la lista de incidencias (cada una como dict),
-    sin imprimir nada. Reutiliza las mismas claves que process().
+    sin imprimir nada. Reutiliza las mismas claves que process()..
     """
     try:
         tree = ET.parse(file_path)
