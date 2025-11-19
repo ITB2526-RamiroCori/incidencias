@@ -372,12 +372,83 @@ def process(file_path, json_path=None):
             p = Path(json_path)
             if not p.parent.exists():
                 p.parent.mkdir(parents=True, exist_ok=True)
-            with p.open("w", encoding="utf-8") as fh:
-                json.dump(out, fh, ensure_ascii=False, indent=2)
-            print(Fore.GREEN + f"JSON escrito en: {str(p)}" + Style.RESET_ALL)
+            # If the file already exists, ask user whether to overwrite or append (avoid duplicates by id)
+            try:
+                if p.exists():
+                    print(Fore.YELLOW + f"El fichero JSON ya existe: {str(p)}" + Style.RESET_ALL)
+                    print("  1) Sobreescribir el archivo (escribir solo las nuevas incidencias)")
+                    print("  2) Añadir nuevas incidencias (mantener las existentes, evitar duplicados por id)")
+                    print("  3) Cancelar (no escribir)")
+                    choice = None
+                    while choice not in ("1", "2", "3"):
+                        choice = input(Fore.CYAN + "Selecciona opción [1/2/3]: " + Style.RESET_ALL).strip()
+                    if choice == "3":
+                        print(Fore.YELLOW + "Operación cancelada. No se ha modificado el JSON." + Style.RESET_ALL)
+                    elif choice == "1":
+                        # Sobreescribir: comportamiento previo
+                        with p.open("w", encoding="utf-8") as fh:
+                            json.dump(out, fh, ensure_ascii=False, indent=2)
+                        print(Fore.GREEN + f"JSON sobrescrito en: {str(p)}" + Style.RESET_ALL)
+                    else:
+                        # Añadir nuevas incidencias: cargar existente y anexar las que no tengan id duplicado
+                        try:
+                            with p.open("r", encoding="utf-8") as fh:
+                                existing = json.load(fh)
+                        except Exception:
+                            # si no podemos leer el JSON existente, avisamos y caemos a sobrescribir
+                            print(Fore.YELLOW + "No se pudo leer el JSON existente; se procederá a sobrescribirlo." + Style.RESET_ALL)
+                            with p.open("w", encoding="utf-8") as fh:
+                                json.dump(out, fh, ensure_ascii=False, indent=2)
+                            print(Fore.GREEN + f"JSON escrito en: {str(p)}" + Style.RESET_ALL)
+                        else:
+                            # Extraer la lista de incidencias existente (si la estructura es la esperada)
+                            existing_incs = []
+                            if isinstance(existing, dict):
+                                existing_incs = existing.get("incidencias", []) or []
+                            elif isinstance(existing, list):
+                                existing_incs = existing
+                            # Construir set de ids existentes
+                            existing_ids = set()
+                            for it in existing_incs:
+                                try:
+                                    existing_ids.add(int(it.get("id")))
+                                except Exception:
+                                    # ignorar ids no parseables
+                                    pass
+                            # Anexar solo las incidencias nuevas (evitar duplicados por id)
+                            added = 0
+                            for it in out.get("incidencias", []):
+                                try:
+                                    iid = int(it.get("id"))
+                                except Exception:
+                                    iid = None
+                                if iid is not None and iid in existing_ids:
+                                    continue
+                                existing_incs.append(it)
+                                added += 1
+                            # Actualizar estructura meta si existe, o construir una mínima
+                            if not isinstance(existing, dict):
+                                merged = {"incidencias": existing_incs, "meta": {"total": len(existing_incs), "generated_at": datetime.now().isoformat()}}
+                            else:
+                                merged = existing
+                                merged["incidencias"] = existing_incs
+                                meta = merged.get("meta", {})
+                                meta["total"] = len(existing_incs)
+                                meta["generated_at"] = datetime.now().isoformat()
+                                merged["meta"] = meta
+                            # Escribir el JSON combinado
+                            with p.open("w", encoding="utf-8") as fh:
+                                json.dump(merged, fh, ensure_ascii=False, indent=2)
+                            print(Fore.GREEN + f"JSON actualizado en: {str(p)}  (añadidas: {added})" + Style.RESET_ALL)
+                else:
+                    # No existe el fichero: comportamiento previo (crear)
+                    with p.open("w", encoding="utf-8") as fh:
+                        json.dump(out, fh, ensure_ascii=False, indent=2)
+                    print(Fore.GREEN + f"JSON escrito en: {str(p)}" + Style.RESET_ALL)
+            except Exception as e:
+                report_error(e, context="escribiendo JSON de salida")
         except Exception as e:
-            report_error(e, context="escribiendo JSON de salida")
-
+            report_error(e, context="preparando JSON de salida")
 def load_incidencias(file_path):
     """
     Parsea el XML y devuelve la lista de incidencias (cada una como dict),
