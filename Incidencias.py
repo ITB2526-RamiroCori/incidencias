@@ -342,6 +342,76 @@ def process(file_path, json_path=None):
         except Exception as e:
             print(Fore.RED + f"Error escribiendo JSON: {e}" + Style.RESET_ALL)
 
+def load_incidencias(file_path):
+    """
+    Parsea el XML y devuelve la lista de incidencias (cada una como dict),
+    sin imprimir nada. Reutiliza las mismas claves que process().
+    """
+    try:
+        tree = ET.parse(file_path)
+    except Exception as e:
+        print(Fore.RED + "Error leyendo XML:" + str(e))
+        return []
+    root = tree.getroot()
+    incidencias = []
+    for inc in root.findall("Incidencia"):
+        record = {
+            "timestamp_raw": get_text(inc, TAG_TIMESTAMP),
+            "date": get_text(inc, TAG_DATE),
+            "time": get_text(inc, TAG_TIME),
+            "email": get_text(inc, TAG_EMAIL),
+            "informant": get_text(inc, TAG_INFORMANT),
+            "ubicacio": get_text(inc, TAG_LOCATION),
+            "tipus_equip": get_text(inc, TAG_TYPE),
+            "model": get_text(inc, "Model_de_equip"),
+            "codi": get_text(inc, "Codi_d_ordinador__SACE_"),
+            "desc": get_text(inc, TAG_DESC),
+            "prioritat": get_text(inc, TAG_PRIORITY),
+            "funciona": get_text(inc, TAG_FUNCIONA),
+        }
+        record["ts_parsed"] = try_parse_timestamp(record["timestamp_raw"], record["date"], record["time"])
+        is_valid, reasons = validate_record(record)
+        record["is_valid"] = is_valid
+        record["invalid_reasons"] = reasons
+        incidencias.append(record)
+    return incidencias
+
+def display_incidencias(incidencias, prioridad_filter="todas"):
+    """
+    Muestra por consola las incidencias filtradas por prioridad.
+    prioridad_filter: 'alta', 'media', 'baixa' (o 'baja'), o 'todas'
+    """
+    pf = (prioridad_filter or "todas").strip().lower()
+    def matches(r):
+        if pf == "todas":
+            return True
+        p = (r.get("prioritat") or "").lower()
+        if pf == "alta":
+            return "alta" in p or "high" in p
+        if pf == "media":
+            return "media" in p or "med" in p
+        if pf in ("baixa", "baja"):
+            return "baixa" in p or "low" in p or "baja" in p
+        return True
+
+    filtered = [r for r in incidencias if matches(r)]
+    if not filtered:
+        print(Fore.YELLOW + "No hay incidencias con esa prioridad." + Style.RESET_ALL)
+        return
+
+    print(Style.BRIGHT + Fore.MAGENTA + f"\nListado de incidencias (filtradas: {prioridad_filter})".center(80, " ") + Style.RESET_ALL)
+    for idx, r in enumerate(filtered, 1):
+        pri = r.get("prioritat") or "Desconegut"
+        color = color_for_priority(pri)
+        ts = r["ts_parsed"].strftime("%Y-%m-%d %H:%M:%S") if r["ts_parsed"] else (r["date"] + " " + r["time"] if r["date"] else r["timestamp_raw"] or "N/A")
+        print(color + f"\n[{idx:3}] [{pri.upper():6}] {ts}" + Style.RESET_ALL)
+        print(f"  Informant: {Fore.CYAN}{shorten(r['informant'], 60)}{Style.RESET_ALL}  Email: {r['email'] or 'N/A'}")
+        print(f"  Ubicació: {Fore.WHITE}{shorten(r['ubicacio'], 60)}{Style.RESET_ALL}  Tipus: {shorten(r['tipus_equip'],30)}")
+        print(f"  Descripció: {shorten(r['desc'], 200)}")
+        if not r.get("is_valid"):
+            print(f"  {Fore.RED}  Razones: {', '.join(r.get('invalid_reasons', []))}{Style.RESET_ALL}")
+    print()
+
 def main():
     # Resolve script directory so the program can be executed from any cwd
     script_dir = Path(__file__).resolve().parent
@@ -378,7 +448,44 @@ def main():
         except Exception:
             json_out = None
 
-    process(str(xml_path), json_path=json_out)
+    # Menú interactivo
+    try:
+        while True:
+            print(Style.BRIGHT + "\nMenú interactivo".center(60, " ") + Style.RESET_ALL)
+            print("  1) Ver estadísticas")
+            print("  2) Ver incidencias (filtrar por prioridad)")
+            print("  3) Salir")
+            choice = input(Fore.CYAN + "\nSelecciona opción [1-3]: " + Style.RESET_ALL).strip()
+            if choice == "1":
+                # Reutiliza process para mostrar las estadísticas exactamente igual
+                process(str(xml_path), json_path=json_out)
+            elif choice == "2":
+                incs = load_incidencias(str(xml_path))
+                if not incs:
+                    print(Fore.RED + "No se pudieron cargar incidencias o fichero vacío." + Style.RESET_ALL)
+                    continue
+                print("\nSeleccione prioridad para filtrar:")
+                print("  a) Alta")
+                print("  m) Media")
+                print("  b) Baixa / Baja")
+                print("  t) Todas")
+                sel = input(Fore.CYAN + "Opción [a/m/b/t]: " + Style.RESET_ALL).strip().lower()
+                if sel == "a":
+                    display_incidencias(incs, "alta")
+                elif sel == "m":
+                    display_incidencias(incs, "media")
+                elif sel == "b":
+                    display_incidencias(incs, "baixa")
+                else:
+                    display_incidencias(incs, "todas")
+                input(Fore.MAGENTA + "Pulse Enter para volver al menú..." + Style.RESET_ALL)
+            elif choice == "3" or choice.lower() in ("q", "salir", "exit"):
+                print(Fore.GREEN + "Saliendo..." + Style.RESET_ALL)
+                break
+            else:
+                print(Fore.YELLOW + "Opción no válida. Intenta de nuevo." + Style.RESET_ALL)
+    except KeyboardInterrupt:
+        print("\n" + Fore.GREEN + "Interrupción por teclado. Saliendo..." + Style.RESET_ALL)
 
 if __name__ == "__main__":
     main()
